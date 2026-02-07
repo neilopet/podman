@@ -125,7 +125,7 @@ func Init(opts machineDefine.InitOptions, mp vmconfigs.VMProvider) error {
 	}
 
 	// Mounts
-	if mp.VMType() != machineDefine.WSLVirt && mp.VMType() != machineDefine.VBoxVirt {
+	if mp.VMType() != machineDefine.WSLVirt {
 		mc.Mounts = CmdLineVolumesToMounts(opts.Volumes, mp.MountType())
 	}
 

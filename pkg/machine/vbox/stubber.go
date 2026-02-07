@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	gvproxy "github.com/containers/gvisor-tap-vsock/pkg/types"
@@ -61,6 +62,26 @@ func (v VBoxStubber) CreateVM(_ define.CreateVMOpts, mc *vmconfigs.MachineConfig
 	if exists {
 		logrus.Infof("VirtualBox VM %q already exists, adopting it", vmName)
 		mc.VBoxHypervisor.VMName = vmName
+
+		// Configure shared folders (VM must be stopped for sharedfolder add)
+		if len(mc.Mounts) > 0 {
+			// Remove any existing shared folders to avoid conflicts
+			if err := removeAllSharedFolders(vboxManagePath, vmName); err != nil {
+				logrus.Warnf("Failed to clean existing shared folders: %v", err)
+			}
+
+			for _, mnt := range mc.Mounts {
+				name := mnt.Tag
+				if name == "" {
+					name = mnt.Target
+				}
+				logrus.Infof("Adding shared folder: %s -> %s (host: %s)", name, mnt.Target, mnt.Source)
+				if err := addSharedFolder(vboxManagePath, vmName, name, mnt.Source, mnt.Target, mnt.ReadOnly); err != nil {
+					return fmt.Errorf("adding shared folder %s: %w", name, err)
+				}
+			}
+		}
+
 		return nil
 	}
 
@@ -206,6 +227,26 @@ func (v VBoxStubber) PostStartNetworking(mc *vmconfigs.MachineConfig, _ bool) er
 	logrus.Infof("Waiting for SSH to be available at %s:%d", host, port)
 	if err := waitForSSH(host, port, 120*time.Second); err != nil {
 		return fmt.Errorf("VM started but SSH not available: %w", err)
+	}
+
+	// Fix mount point parent directory permissions.
+	// VBox automounter creates parent dirs as root:root 0750, which prevents
+	// non-root users from traversing to the mount point. Make them world-readable.
+	if len(mc.Mounts) > 0 {
+		username := mc.SSH.RemoteUsername
+		identity := mc.SSH.IdentityPath
+		for _, mnt := range mc.Mounts {
+			parent := filepath.ToSlash(filepath.Dir(filepath.Clean(mnt.Target)))
+			if parent == "/" || parent == "." || parent == "/mnt" {
+				continue
+			}
+			// Use sudo with stdin password. The SSH user's password typically matches
+			// the username on default Kali installs (kali/kali).
+			cmd := fmt.Sprintf("echo %s | sudo -S chmod 755 %s 2>/dev/null", username, parent)
+			if err := machine.CommonSSHSilent(username, identity, mc.Name, host, port, []string{cmd}); err != nil {
+				logrus.Warnf("Failed to fix permissions on %s: %v (you may need to manually run: sudo chmod 755 %s)", parent, err, parent)
+			}
+		}
 	}
 
 	return nil

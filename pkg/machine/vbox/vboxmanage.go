@@ -137,3 +137,60 @@ func modifyVM(vboxManagePath, vmName string, args ...string) error {
 	return err
 }
 
+// addSharedFolder adds a VirtualBox shared folder with automount to a stopped VM.
+// The folder is mounted at mountPoint inside the guest via Guest Additions.
+func addSharedFolder(vboxManagePath, vmName, name, hostPath, mountPoint string, readOnly bool) error {
+	args := []string{"sharedfolder", "add", vmName,
+		"--name", name,
+		"--hostpath", hostPath,
+		"--automount",
+		"--auto-mount-point", mountPoint,
+	}
+	if readOnly {
+		args = append(args, "--readonly")
+	}
+	_, err := runVBoxManage(vboxManagePath, args...)
+	return err
+}
+
+// removeSharedFolder removes a shared folder from a VM
+func removeSharedFolder(vboxManagePath, vmName, name string) error {
+	_, err := runVBoxManage(vboxManagePath, "sharedfolder", "remove", vmName, "--name", name)
+	return err
+}
+
+// listSharedFolders returns the names of shared folders configured on a VM
+func listSharedFolders(vboxManagePath, vmName string) ([]string, error) {
+	out, err := runVBoxManage(vboxManagePath, "showvminfo", vmName, "--machinereadable")
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		// Lines like: SharedFolderNameMachineMapping1="sharename"
+		if strings.HasPrefix(line, "SharedFolderNameMachineMapping") {
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) == 2 {
+				name := strings.Trim(parts[1], "\"")
+				names = append(names, name)
+			}
+		}
+	}
+	return names, nil
+}
+
+// removeAllSharedFolders removes all shared folders from a VM
+func removeAllSharedFolders(vboxManagePath, vmName string) error {
+	names, err := listSharedFolders(vboxManagePath, vmName)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if err := removeSharedFolder(vboxManagePath, vmName, name); err != nil {
+			logrus.Warnf("Failed to remove shared folder %q: %v", name, err)
+		}
+	}
+	return nil
+}
+
