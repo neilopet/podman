@@ -115,6 +115,11 @@ func ssh(_ *cobra.Command, args []string) error {
 		}
 	}
 
-	err = machine.LocalhostSSHShell(sshOpts.Username, mc.SSH.IdentityPath, mc.Name, mc.SSH.Port, sshOpts.Args)
+	// For VBox with a non-localhost SSH host, use the VBox IP
+	if mc.VBoxHypervisor != nil && mc.VBoxHypervisor.HostOnlyIP != "" {
+		err = machine.CommonSSHShell(sshOpts.Username, mc.SSH.IdentityPath, mc.Name, mc.VBoxHypervisor.HostOnlyIP, mc.SSH.Port, sshOpts.Args)
+	} else {
+		err = machine.LocalhostSSHShell(sshOpts.Username, mc.SSH.IdentityPath, mc.Name, mc.SSH.Port, sshOpts.Args)
+	}
 	return utils.HandleOSExecError(err)
 }

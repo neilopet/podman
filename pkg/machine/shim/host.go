@@ -125,7 +125,7 @@ func Init(opts machineDefine.InitOptions, mp vmconfigs.VMProvider) error {
 	}
 
 	// Mounts
-	if mp.VMType() != machineDefine.WSLVirt {
+	if mp.VMType() != machineDefine.WSLVirt && mp.VMType() != machineDefine.VBoxVirt {
 		mc.Mounts = CmdLineVolumesToMounts(opts.Volumes, mp.MountType())
 	}
 
@@ -144,39 +144,75 @@ func Init(opts machineDefine.InitOptions, mp vmconfigs.VMProvider) error {
 	// This is a break from before.  New images are named vmname-ARCH.
 	// It turns out that Windows/HyperV will not accept a disk that
 	// is not suffixed as ".vhdx". Go figure
-	switch mp.VMType() {
-	case machineDefine.QemuVirt:
-		imageExtension = ".qcow2"
-	case machineDefine.AppleHvVirt, machineDefine.LibKrun:
-		imageExtension = ".raw"
-	case machineDefine.HyperVVirt:
-		imageExtension = ".vhdx"
-	case machineDefine.WSLVirt:
-		imageExtension = ""
-	default:
-		return fmt.Errorf("unknown VM type: %s", mp.VMType())
+	// VBox adopts pre-existing VMs — skip image download and disk creation
+	if mp.VMType() == machineDefine.VBoxVirt {
+		// Create a placeholder image path (not actually used, but MachineConfig expects it)
+		imagePath, err = dirs.DataDir.AppendToNewVMFile(fmt.Sprintf("%s-%s.vbox", opts.Name, runtime.GOARCH), nil)
+		if err != nil {
+			return err
+		}
+		mc.ImagePath = imagePath
+
+		// For VBox, the --image flag specifies the VirtualBox VM name to adopt.
+		// If not specified, the podman machine name is used.
+		if opts.Image != "" {
+			logrus.Infof("VBox: using --image value %q as VirtualBox VM name", opts.Image)
+			if mc.VBoxHypervisor == nil {
+				mc.VBoxHypervisor = new(vmconfigs.VirtualBoxConfig)
+			}
+			mc.VBoxHypervisor.VMName = opts.Image
+		}
+
+		// Allow setting the host-only IP via environment variable
+		if vboxIP, found := os.LookupEnv("PODMAN_VBOX_HOST_IP"); found {
+			if mc.VBoxHypervisor == nil {
+				mc.VBoxHypervisor = new(vmconfigs.VirtualBoxConfig)
+			}
+			mc.VBoxHypervisor.HostOnlyIP = vboxIP
+		}
+
+		// Allow overriding the SSH identity path via environment variable
+		if vboxSSHKey, found := os.LookupEnv("PODMAN_VBOX_SSH_IDENTITY"); found {
+			mc.SSH.IdentityPath = vboxSSHKey
+		}
+
+		// For VBox, use port 22 by default since VMs have native SSH
+		mc.SSH.Port = 22
+	} else {
+		switch mp.VMType() {
+		case machineDefine.QemuVirt:
+			imageExtension = ".qcow2"
+		case machineDefine.AppleHvVirt, machineDefine.LibKrun:
+			imageExtension = ".raw"
+		case machineDefine.HyperVVirt:
+			imageExtension = ".vhdx"
+		case machineDefine.WSLVirt:
+			imageExtension = ""
+		default:
+			return fmt.Errorf("unknown VM type: %s", mp.VMType())
+		}
+
+		imagePath, err = dirs.DataDir.AppendToNewVMFile(fmt.Sprintf("%s-%s%s", opts.Name, runtime.GOARCH, imageExtension), nil)
+		if err != nil {
+			return err
+		}
+		mc.ImagePath = imagePath
+
+		// TODO The following stanzas should be re-written in a differeent place.  It should have a custom
+		// parser for our image pulling.  It would be nice if init just got an error and mydisk back.
+		//
+		// Eventual valid input:
+		// "" <- means take the default
+		// "http|https://path"
+		// "/path
+		// "docker://quay.io/something/someManifest
+
+		if err := diskpull.GetDisk(opts.Image, dirs, mc.ImagePath, mp.VMType(), mc.Name, opts.SkipTlsVerify); err != nil {
+			return err
+		}
+
+		callbackFuncs.Add(mc.ImagePath.Delete)
 	}
-
-	imagePath, err = dirs.DataDir.AppendToNewVMFile(fmt.Sprintf("%s-%s%s", opts.Name, runtime.GOARCH, imageExtension), nil)
-	if err != nil {
-		return err
-	}
-	mc.ImagePath = imagePath
-
-	// TODO The following stanzas should be re-written in a differeent place.  It should have a custom
-	// parser for our image pulling.  It would be nice if init just got an error and mydisk back.
-	//
-	// Eventual valid input:
-	// "" <- means take the default
-	// "http|https://path"
-	// "/path
-	// "docker://quay.io/something/someManifest
-
-	if err := diskpull.GetDisk(opts.Image, dirs, mc.ImagePath, mp.VMType(), mc.Name, opts.SkipTlsVerify); err != nil {
-		return err
-	}
-
-	callbackFuncs.Add(mc.ImagePath.Delete)
 
 	logrus.Debugf("--> imagePath is %q", imagePath.GetPath())
 
@@ -277,9 +313,15 @@ func Init(opts machineDefine.InitOptions, mp vmconfigs.VMProvider) error {
 		return err
 	}
 
-	// TODO AddSSHConnectionToPodmanSocket could take an machineconfig instead
-	if err := connection.AddSSHConnectionsToPodmanSocket(mc.HostUser.UID, mc.SSH.Port, mc.SSH.IdentityPath, mc.Name, mc.SSH.RemoteUsername, opts); err != nil {
-		return err
+	// For VBox, register connections using the VM's host-only IP instead of localhost
+	if mp.VMType() == machineDefine.VBoxVirt && mc.VBoxHypervisor != nil && mc.VBoxHypervisor.HostOnlyIP != "" {
+		if err := connection.AddSSHConnectionsToPodmanSocketWithHost(mc.HostUser.UID, mc.SSH.Port, mc.SSH.IdentityPath, mc.Name, mc.SSH.RemoteUsername, mc.VBoxHypervisor.HostOnlyIP, opts); err != nil {
+			return err
+		}
+	} else {
+		if err := connection.AddSSHConnectionsToPodmanSocket(mc.HostUser.UID, mc.SSH.Port, mc.SSH.IdentityPath, mc.Name, mc.SSH.RemoteUsername, opts); err != nil {
+			return err
+		}
 	}
 
 	cleanup := func() error {
@@ -595,8 +637,11 @@ func Start(mc *vmconfigs.MachineConfig, mp vmconfigs.VMProvider, dirs *machineDe
 	close(signalChan)
 	signalChanClosed = true
 
-	if err := proxyenv.ApplyProxies(mc); err != nil {
-		return err
+	// VBox uses direct SSH to the VM; skip localhost-only operations
+	if mp.VMType() != machineDefine.VBoxVirt {
+		if err := proxyenv.ApplyProxies(mc); err != nil {
+			return err
+		}
 	}
 
 	// mount the volumes to the VM
@@ -605,7 +650,7 @@ func Start(mc *vmconfigs.MachineConfig, mp vmconfigs.VMProvider, dirs *machineDe
 	}
 
 	// update the podman/docker socket service if the host user has been modified at all (UID or Rootful)
-	if mc.HostUser.Modified {
+	if mc.HostUser.Modified && mp.VMType() != machineDefine.VBoxVirt {
 		if machine.UpdatePodmanDockerSockService(mc) == nil {
 			// Reset modification state if there are no errors, otherwise ignore errors
 			// which are already logged

@@ -34,7 +34,7 @@ func CreateReadyUnitFile(provider define.VMType, opts *ReadyUnitOpts) (string, e
 		readyUnit.Add("Unit", "After", "systemd-user-sessions.service")
 		readyUnit.Add("Unit", "After", "vsock-network.service")
 		readyUnit.Add("Service", "ExecStart", fmt.Sprintf("/bin/sh -c '/usr/bin/echo Ready | socat - VSOCK-CONNECT:2:%d'", opts.Port))
-	case define.WSLVirt: // WSL does not use ignition
+	case define.WSLVirt, define.VBoxVirt: // WSL and VBox do not use ignition
 		return "", nil
 	default:
 		return "", fmt.Errorf("unable to generate ready unit for provider %q", provider.String())

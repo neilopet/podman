@@ -3,9 +3,11 @@ package provider
 import (
 	"fmt"
 	"os"
+	"os/exec"
 
 	"github.com/containers/libhvee/pkg/hypervctl"
 	"github.com/containers/podman/v5/pkg/machine/vmconfigs"
+	"github.com/containers/podman/v5/pkg/machine/vbox"
 	"github.com/containers/podman/v5/pkg/machine/wsl"
 	"github.com/containers/podman/v5/pkg/machine/wsl/wutil"
 
@@ -38,6 +40,8 @@ func Get() (vmconfigs.VMProvider, error) {
 			return nil, fmt.Errorf("hyperv machines require admin authority")
 		}
 		return new(hyperv.HyperVStubber), nil
+	case define.VBoxVirt:
+		return new(vbox.VBoxStubber), nil
 	default:
 		return nil, fmt.Errorf("unsupported virtualization provider: `%s`", resolvedVMType.String())
 	}
@@ -47,12 +51,13 @@ func GetAll() []vmconfigs.VMProvider {
 	return []vmconfigs.VMProvider{
 		new(wsl.WSLStubber),
 		new(hyperv.HyperVStubber),
+		new(vbox.VBoxStubber),
 	}
 }
 
 // SupportedProviders returns the providers that are supported on the host operating system
 func SupportedProviders() []define.VMType {
-	return []define.VMType{define.HyperVVirt, define.WSLVirt}
+	return []define.VMType{define.HyperVVirt, define.WSLVirt, define.VBoxVirt}
 }
 
 func IsInstalled(provider define.VMType) (bool, error) {
@@ -68,6 +73,13 @@ func IsInstalled(provider define.VMType) (bool, error) {
 			defer service.Close()
 		}
 		return false, nil
+	case define.VBoxVirt:
+		_, err := exec.LookPath("VBoxManage")
+		if err == nil {
+			return true, nil
+		}
+		_, err = exec.LookPath("VBoxManage.exe")
+		return err == nil, nil
 	default:
 		return false, nil
 	}
@@ -82,6 +94,8 @@ func HasPermsForProvider(provider define.VMType) bool {
 		return false
 	case define.HyperVVirt:
 		return wsl.HasAdminRights()
+	case define.VBoxVirt:
+		return true
 	}
 
 	return true

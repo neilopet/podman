@@ -91,6 +91,11 @@ func startHostForwarder(mc *vmconfigs.MachineConfig, provider vmconfigs.VMProvid
 }
 
 func startNetworking(mc *vmconfigs.MachineConfig, provider vmconfigs.VMProvider) (string, machine.APIForwardingState, error) {
+	// VBox uses direct networking to the VM, skip local port checks and gvproxy setup
+	if provider.VMType() == define.VBoxVirt {
+		return "", machine.NoForwarding, provider.StartNetworking(mc, nil)
+	}
+
 	// Check if SSH port is in use, and reassign if necessary
 	if !ports.IsLocalPortAvailable(mc.SSH.Port) {
 		logrus.Warnf("detected port conflict on machine ssh port [%d], reassigning", mc.SSH.Port)
@@ -124,6 +129,12 @@ func startNetworking(mc *vmconfigs.MachineConfig, provider vmconfigs.VMProvider)
 // conductVMReadinessCheck checks to make sure the machine is in the proper state
 // and that SSH is up and running
 func conductVMReadinessCheck(mc *vmconfigs.MachineConfig, maxBackoffs int, backoff time.Duration, stateF func() (define.Status, error)) (connected bool, sshError error, err error) {
+	// For VBox, determine the SSH host (may be non-localhost)
+	sshHost := "127.0.0.1"
+	if mc.VBoxHypervisor != nil && mc.VBoxHypervisor.HostOnlyIP != "" {
+		sshHost = mc.VBoxHypervisor.HostOnlyIP
+	}
+
 	for i := range maxBackoffs {
 		if i > 0 {
 			time.Sleep(backoff)
@@ -137,7 +148,7 @@ func conductVMReadinessCheck(mc *vmconfigs.MachineConfig, maxBackoffs int, backo
 			sshError = ErrNotRunning
 			continue
 		}
-		if !isListening(mc.SSH.Port) {
+		if !isListeningAt(sshHost, mc.SSH.Port) {
 			sshError = ErrSSHNotListening
 			continue
 		}
@@ -150,7 +161,13 @@ func conductVMReadinessCheck(mc *vmconfigs.MachineConfig, maxBackoffs int, backo
 		// CoreOS users have reported the same observation but
 		// the underlying source of the issue remains unknown.
 
-		if sshError = machine.LocalhostSSHSilent(mc.SSH.RemoteUsername, mc.SSH.IdentityPath, mc.Name, mc.SSH.Port, []string{"true"}); sshError != nil {
+		// For VBox with non-localhost SSH, use a direct TCP+SSH check
+		if mc.VBoxHypervisor != nil && mc.VBoxHypervisor.HostOnlyIP != "" {
+			sshError = machine.CommonSSHSilent(mc.SSH.RemoteUsername, mc.SSH.IdentityPath, mc.Name, sshHost, mc.SSH.Port, []string{"true"})
+		} else {
+			sshError = machine.LocalhostSSHSilent(mc.SSH.RemoteUsername, mc.SSH.IdentityPath, mc.Name, mc.SSH.Port, []string{"true"})
+		}
+		if sshError != nil {
 			logrus.Debugf("SSH readiness check for machine failed: %v", sshError)
 			continue
 		}
@@ -193,7 +210,7 @@ func reassignSSHPort(mc *vmconfigs.MachineConfig, provider vmconfigs.VMProvider)
 	}
 
 	mc.SSH.Port = newPort
-	if err := connection.UpdateConnectionPairPort(mc.Name, newPort, mc.HostUser.UID, mc.SSH.RemoteUsername, mc.SSH.IdentityPath); err != nil {
+	if err := connection.UpdateConnectionPairPort(mc.Name, newPort, mc.HostUser.UID, mc.SSH.RemoteUsername, mc.SSH.IdentityPath, ""); err != nil {
 		return fmt.Errorf("could not update remote connection configuration: %w", err)
 	}
 
@@ -209,8 +226,12 @@ func reassignSSHPort(mc *vmconfigs.MachineConfig, provider vmconfigs.VMProvider)
 }
 
 func isListening(port int) bool {
+	return isListeningAt("127.0.0.1", port)
+}
+
+func isListeningAt(host string, port int) bool {
 	// Check if we can dial it
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", "127.0.0.1", port), 10*time.Millisecond)
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), 2*time.Second)
 	if err != nil {
 		return false
 	}

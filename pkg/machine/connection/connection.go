@@ -54,8 +54,8 @@ func addConnection(cons []connection, identity string, isDefault bool) error {
 	})
 }
 
-func UpdateConnectionPairPort(name string, port, uid int, remoteUsername string, identityPath string) error {
-	cons := createConnections(name, uid, port, remoteUsername)
+func UpdateConnectionPairPort(name string, port, uid int, remoteUsername string, identityPath string, host string) error {
+	cons := createConnections(name, uid, port, remoteUsername, host)
 	return config.EditConnectionConfig(func(cfg *config.ConnectionsFile) error {
 		for _, con := range cons {
 			dst := config.Destination{

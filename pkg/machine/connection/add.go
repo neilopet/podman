@@ -12,12 +12,18 @@ import (
 // AddSSHConnectionsToPodmanSocket adds SSH connections to the podman socket if
 // no ignition path is provided
 func AddSSHConnectionsToPodmanSocket(uid, port int, identityPath, name, remoteUsername string, opts define.InitOptions) error {
+	return AddSSHConnectionsToPodmanSocketWithHost(uid, port, identityPath, name, remoteUsername, "", opts)
+}
+
+// AddSSHConnectionsToPodmanSocketWithHost adds SSH connections using the specified host IP.
+// If host is empty, LocalhostIP is used.
+func AddSSHConnectionsToPodmanSocketWithHost(uid, port int, identityPath, name, remoteUsername, host string, opts define.InitOptions) error {
 	if len(opts.IgnitionPath) > 0 {
 		fmt.Println("An ignition path was provided.  No SSH connection was added to Podman")
 		return nil
 	}
 
-	cons := createConnections(name, uid, port, remoteUsername)
+	cons := createConnections(name, uid, port, remoteUsername, host)
 
 	// The first connection defined when connections is empty will become the default
 	// regardless of IsDefault, so order according to rootful
@@ -28,9 +34,12 @@ func AddSSHConnectionsToPodmanSocket(uid, port int, identityPath, name, remoteUs
 	return addConnection(cons, identityPath, opts.IsDefault)
 }
 
-func createConnections(name string, uid, port int, remoteUsername string) []connection {
-	uri := makeSSHURL(LocalhostIP, fmt.Sprintf("/run/user/%d/podman/podman.sock", uid), strconv.Itoa(port), remoteUsername)
-	uriRoot := makeSSHURL(LocalhostIP, "/run/podman/podman.sock", strconv.Itoa(port), "root")
+func createConnections(name string, uid, port int, remoteUsername string, host string) []connection {
+	if host == "" {
+		host = LocalhostIP
+	}
+	uri := makeSSHURL(host, fmt.Sprintf("/run/user/%d/podman/podman.sock", uid), strconv.Itoa(port), remoteUsername)
+	uriRoot := makeSSHURL(host, "/run/podman/podman.sock", strconv.Itoa(port), "root")
 
 	return []connection{
 		{

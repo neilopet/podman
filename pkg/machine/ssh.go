@@ -32,6 +32,21 @@ func LocalhostSSHWithStdin(username, identityPath, name string, sshPort int, inp
 	return localhostBuiltinSSH(username, identityPath, name, sshPort, inputArgs, true, stdin)
 }
 
+// CommonSSH connects to a machine at a specified host (not just localhost)
+func CommonSSH(username, identityPath, name, host string, sshPort int, inputArgs []string) error {
+	return commonBuiltinSSH(username, identityPath, name, host, sshPort, inputArgs, true, os.Stdin)
+}
+
+// CommonSSHSilent connects to a machine at a specified host silently
+func CommonSSHSilent(username, identityPath, name, host string, sshPort int, inputArgs []string) error {
+	return commonBuiltinSSH(username, identityPath, name, host, sshPort, inputArgs, false, nil)
+}
+
+// CommonSSHShell connects to a machine at a specified host using native SSH
+func CommonSSHShell(username, identityPath, name, host string, sshPort int, inputArgs []string) error {
+	return commonNativeSSH(username, identityPath, name, host, sshPort, inputArgs, os.Stdin)
+}
+
 func localhostBuiltinSSH(username, identityPath, name string, sshPort int, inputArgs []string, passOutput bool, stdin io.Reader) error {
 	config, err := createLocalhostConfig(username, identityPath) // WARNING: This MUST NOT be generalized to allow communication over untrusted networks.
 	if err != nil {
@@ -115,6 +130,61 @@ func createLocalhostConfig(user string, identityPath string) (*ssh.ClientConfig,
 		// This would be UNACCEPTABLE for most other uses.
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}, nil
+}
+
+func commonBuiltinSSH(username, identityPath, name, host string, sshPort int, inputArgs []string, passOutput bool, stdin io.Reader) error {
+	config, err := createLocalhostConfig(username, identityPath)
+	if err != nil {
+		return err
+	}
+
+	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", host, sshPort), config)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+
+	cmd := strings.Join(inputArgs, " ")
+	logrus.Debugf("Running ssh command on machine %q at %s:%d: %s", name, host, sshPort, cmd)
+	session.Stdin = stdin
+	if passOutput {
+		session.Stdout = os.Stdout
+		session.Stderr = os.Stderr
+	} else if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		return runSessionWithDebug(session, cmd)
+	}
+
+	return session.Run(cmd)
+}
+
+func commonNativeSSH(username, identityPath, name, host string, sshPort int, inputArgs []string, stdin io.Reader) error {
+	sshDestination := username + "@" + host
+	port := strconv.Itoa(sshPort)
+	interactive := true
+
+	args := append([]string{"-i", identityPath, "-p", port, sshDestination}, LocalhostSSHArgs()...)
+	if len(inputArgs) > 0 {
+		interactive = false
+		args = append(args, inputArgs...)
+	} else {
+		args = append(args, "-t")
+		fmt.Printf("Connecting to vm %s. To close connection, use `~.` or `exit`\n", name)
+	}
+
+	cmd := exec.Command("ssh", args...)
+	logrus.Debugf("Executing: ssh %v\n", args)
+
+	if err := setupIOPassthrough(cmd, interactive, stdin); err != nil {
+		return err
+	}
+
+	return cmd.Run()
 }
 
 func localhostNativeSSH(username, identityPath, name string, sshPort int, inputArgs []string, stdin io.Reader) error {

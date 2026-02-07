@@ -13,6 +13,7 @@ const (
 	AppleHvVirt
 	HyperVVirt
 	LibKrun
+	VBoxVirt
 	UnknownVirt
 )
 
@@ -24,6 +25,7 @@ const (
 	appleHV = "applehv"
 	hyperV  = "hyperv"
 	libkrun = "libkrun"
+	vbox    = "vbox"
 )
 
 func (v VMType) String() string {
@@ -36,6 +38,8 @@ func (v VMType) String() string {
 		return hyperV
 	case LibKrun:
 		return libkrun
+	case VBoxVirt:
+		return vbox
 	}
 	return qemu
 }
@@ -51,6 +55,8 @@ func (v VMType) DiskType() string {
 		return appleHV
 	case HyperVVirt:
 		return hyperV
+	case VBoxVirt:
+		return vbox
 	}
 	return qemu
 }
@@ -65,6 +71,8 @@ func (v VMType) ImageFormat() ImageFormat {
 		return Vhdx
 	case LibKrun:
 		return Raw
+	case VBoxVirt:
+		return Raw // VBox uses pre-existing VMs, format is not relevant
 	}
 	return Qcow
 }
@@ -81,6 +89,8 @@ func ParseVMType(input string, emptyFallback VMType) (VMType, error) {
 		return LibKrun, nil
 	case hyperV:
 		return HyperVVirt, nil
+	case vbox:
+		return VBoxVirt, nil
 	case "":
 		return emptyFallback, nil
 	default:
